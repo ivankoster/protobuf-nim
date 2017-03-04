@@ -1,3 +1,5 @@
+import macros
+
 type
   CodedOutputStream* = seq[byte]
   WireType* = enum
@@ -7,6 +9,10 @@ type
     StartGroup = 3,
     EndGroup = 4,
     Fixed32 = 5
+  PbType = enum
+    PbInt32,
+    PbInt64
+    # todo more types..
 
 type
   MalformedVarintError* = object of Exception
@@ -93,3 +99,17 @@ proc ReadTag*(this: CodedInputStream): uint =
 
 proc ReadInt32*(this: CodedInputStream): int32 =
   cast[int32](this.ReadVarintAsRaw32Bits())
+
+macro PbWriteTo*(obj: typed, output: CodedOutputStream, fieldInfo: untyped): untyped =
+  expectKind(fieldInfo, nnkStmtList)
+  result = newStmtList()
+
+  for field in fieldInfo:
+    expectKind(field, nnkCall)
+    var fieldIdentifier = field[0]
+    expectKind(field[1][0], nnkCommand)
+    expectKind(field[1][0][1], nnkPrefix)
+    var fieldNumberLiteral = field[1][0][1][1]
+    result.add(newIfStmt((infix(newDotExpr(ident($obj.symbol), fieldIdentifier), "!=", newIntLitNode(0)),
+                          newStmtList(newCall("WriteTag", ident($output[0].symbol), fieldNumberLiteral, ident("Varint")),
+                                      newCall("WriteInt32", ident($output[0].symbol), newDotExpr(ident($obj.symbol), fieldIdentifier))))))
