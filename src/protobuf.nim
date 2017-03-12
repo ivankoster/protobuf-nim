@@ -22,6 +22,9 @@ type
 template MakeTag*(fieldNumber: int, wireType: WireType): uint =
   uint32(fieldNumber shl 3) or uint32(wireType)
 
+proc GetWireType(tag: uint): WireType =
+  WireType(tag and 0b0000_0111)
+
 template WriteTag*(this: var CodedOutputStream, fieldNumber: int, wireType: WireType) =
   let rawTag = MakeTag(fieldNumber, wireType)
   this.WriteRaw32BitsAsVarint(rawTag)
@@ -100,6 +103,15 @@ proc ReadTag*(this: CodedInputStream): uint =
 proc ReadInt32*(this: CodedInputStream): int32 =
   cast[int32](this.ReadVarintAsRaw32Bits())
 
+proc SkipField*(this: CodedInputStream, tag: uint) =
+  case tag.GetWireType():
+  of Varint: discard this.ReadVarintAsRaw32Bits()
+  of Fixed64: assert(false) # Not implemented yet
+  of LengthDelimited: assert(false) # Not implemented yet
+  of StartGroup: assert(false) # Not implemented yet
+  of EndGroup: assert(false) # Not implemented yet
+  of Fixed32: assert(false) # Not implemented yet
+
 macro PbWriteTo*(obj: typed, output: CodedOutputStream, fieldInfo: untyped): untyped =
   expectKind(fieldInfo, nnkStmtList)
   result = newStmtList()
@@ -113,3 +125,34 @@ macro PbWriteTo*(obj: typed, output: CodedOutputStream, fieldInfo: untyped): unt
     result.add(newIfStmt((infix(newDotExpr(ident($obj.symbol), fieldIdentifier), "!=", newIntLitNode(0)),
                           newStmtList(newCall("WriteTag", ident($output[0].symbol), fieldNumberLiteral, ident("Varint")),
                                       newCall("WriteInt32", ident($output[0].symbol), newDotExpr(ident($obj.symbol), fieldIdentifier))))))
+
+macro PbMergeFrom*(obj: typed, input: CodedInputStream, fieldInfo: untyped): untyped =
+  expectKind(fieldInfo, nnkStmtList)
+
+  var tagIdentifier = newIdentNode("tag")
+  var caseBody = newTree(nnkCaseStmt, tagIdentifier)
+
+  for field in fieldInfo:
+    expectKind(field, nnkCall)
+    var fieldIdentifier = field[0]
+    expectKind(field[1][0], nnkCommand)
+    expectKind(field[1][0][1], nnkPrefix)
+    var fieldNumberLiteral = field[1][0][1][1]
+    caseBody.add(newTree(nnkOfBranch,
+                         newCall("MakeTag", fieldNumberLiteral, ident("Varint")),
+                         newStmtList(newAssignment(newDotExpr(ident($obj[0].symbol), fieldIdentifier),
+                                                   newCall("ReadInt32", input)
+                                                  )
+                                    )
+                        )
+                )
+  # default case
+  caseBody.add(newTree(nnkElse,
+                       newStmtList(newCall("SkipField",
+                                           input,
+                                           tagIdentifier))))
+
+  result = quote do:
+    var `tagIdentifier`: uint
+    while (`tagIdentifier` = input.ReadTag(); `tagIdentifier` != 0):
+      `caseBody`
